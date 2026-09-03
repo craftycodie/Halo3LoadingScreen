@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Halo 3 Loading Screen</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #000;
+        color: #ccc;
+        font: 14px/1.4 ui-sans-serif, system-ui, sans-serif;
+        overflow: hidden;
+      }
+      #canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        cursor: crosshair;
+      }
+      #canvas.freecam {
+        cursor: none;
+      }
+      #controls-stack {
+        position: fixed;
+        left: 12px;
+        bottom: 12px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 6px;
+        z-index: 2;
+      }
+      #hud {
+        display: none;
+        flex-wrap: wrap;
+        gap: 10px 14px;
+        align-items: center;
+        padding: 8px 12px;
+        background: rgba(0, 0, 0, 0.55);
+        border: 1px solid #333;
+      }
+      #hud.open {
+        display: flex;
+      }
+      #hud label {
+        display: inline-flex;
+        gap: 6px;
+        align-items: center;
+      }
+      #hud input[type='number'] {
+        width: 4.5em;
+        background: #111;
+        color: #eee;
+        border: 1px solid #444;
+        padding: 2px 4px;
+      }
+      #hud button {
+        background: #222;
+        color: #eee;
+        border: 1px solid #555;
+        padding: 4px 10px;
+        cursor: pointer;
+      }
+      #esc-hint {
+        color: #888;
+        font-size: 12px;
+        pointer-events: none;
+        display: none;
+      }
+      #esc-hint.visible {
+        display: block;
+      }
+      #hint {
+        position: fixed;
+        right: 12px;
+        top: 12px;
+        color: #888;
+        font-size: 12px;
+        text-align: right;
+        pointer-events: none;
+      }
+      #status {
+        position: fixed;
+        top: 12px;
+        left: 12px;
+        max-width: 40rem;
+        white-space: pre-wrap;
+        color: #f88;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="canvas"></canvas>
+    <div id="status"></div>
+    <div id="hint"></div>
+    <div id="controls-stack">
+      <div id="esc-hint"></div>
+      <div id="hud">
+        <label><input type="checkbox" id="egg" /> Egg</label>
+        <label><input type="checkbox" id="loop" /> Loop</label>
+        <label><input type="checkbox" id="freecam" /> Freecam</label>
+        <label>Load seconds <input type="number" id="loadSeconds" min="1" max="300" step="1" value="30" /></label>
+        <button type="button" id="restart">Restart</button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
