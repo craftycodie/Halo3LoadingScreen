@@ -11,10 +11,11 @@ import {
 } from './geometry';
 import { CB_BYTES, LoadingConstants, TWO_PI } from './gpu/types';
 import {
+  computeFade,
   createRingState,
   resetRingState,
-  shouldLoopReset,
   SLICE_COUNT,
+  updateFadeOut,
   updateProgress,
   type RingState,
 } from './progress';
@@ -311,9 +312,7 @@ export class LoadingScreenRenderer {
       colorSpace: 'srgb',
     });
 
-    // Prefer float16 ring RT so additive pile-up isn't crushed before composite
-    // (matches the plan; Ares PC uses UNORM but notes float16 keeps headroom).
-    this.ringFormat = 'rgba16float';
+    this.ringFormat = 'rgba8unorm';
 
     const geom = generateGeometry();
     const eggTri = packVertices(expandQuads(geom.eggVerts));
@@ -575,9 +574,9 @@ export class LoadingScreenRenderer {
     }
 
     updateProgress(this.state, 1.0, nowMs, this.loadSeconds);
-    // Browser demo: never dim after completion. Loop resets like
-    // debug_loading_screen_loop (hold ~3s after frac crosses 1).
-    if (this.loop && shouldLoopReset(this.state)) {
+    // Loop: Xbox fade-out (latch near frac 0.9, dim ~2.9s, join+2 hold), then
+    // reset once black. Non-loop stays lit after complete.
+    if (this.loop && updateFadeOut(this.state, nowMs)) {
       resetRingState(this.state);
       this.syncedFreecam = false;
       updateProgress(this.state, 1.0, nowMs, this.loadSeconds);
@@ -607,8 +606,7 @@ export class LoadingScreenRenderer {
       ? freeCamLookAt(this.freecam)
       : trackCam.lookAt;
 
-    // No post-complete fade in this tool (loop or not).
-    const fade = 1.0;
+    const fade = this.loop ? computeFade(this.state, nowMs) : 1.0;
     const lit = trackCam.intensity;
 
     buildWvp(position, lookAt, aspect, this.constants.mat);

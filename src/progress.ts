@@ -205,7 +205,11 @@ export function updateProgress(
   }
 }
 
-/** Fade wait latching (Xbox fade-out). Browser demo skips this when not looping. */
+/**
+ * Xbox 825884E0 fade-out latch / done check.
+ * Latches fade_start near frac 0.9 (once velocity has caught up), then returns
+ * true after ~3s wall-clock and the join reveal (complete + 2s).
+ */
 export function updateFadeOut(state: RingState, nowMs: number): boolean {
   if (state.smoothedFrac < 0.9) {
     return false;
@@ -226,14 +230,7 @@ export function updateFadeOut(state: RingState, nowMs: number): boolean {
   return fadeElapsed >= 3.0;
 }
 
-/** debug_loading_screen_loop: reset 3s after frac crosses 1 (no fade dim). */
-export function shouldLoopReset(state: RingState): boolean {
-  if (state.completeElapsed < 0.0) {
-    return false;
-  }
-  return state.elapsedSeconds - state.completeElapsed >= 3.0;
-}
-
+/** 82588B80: 1 - (now - fade_start) * (1/2900). Full black in ~2.9s. */
 export function computeFade(state: RingState, nowMs: number): number {
   if (state.fadeStartMs === 0xffffffff) {
     return 1.0;
