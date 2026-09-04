@@ -58,7 +58,7 @@ function copyRect(
   }
 }
 
-/** 8258AE18 particle soft disc; volume LCG 0xCAFEF2EF. */
+// Split atlas into GPU textures. `egg` is the birthday message glyph.
 export function buildAtlasTextures(atlas: Uint8Array): AtlasTextures {
   const cell = new Uint8Array(16 * 16);
   const mask = new Uint8Array(32 * 4);

@@ -57,7 +57,6 @@ export interface CameraEval {
   fadeB: number;
 }
 
-/** 8258C1D0 */
 export function evalCamera(
   cameraT: number,
   progressT: number,
@@ -102,7 +101,7 @@ export function evalCamera(
   };
 }
 
-/** Row-major WVP matching Ares loading_screen_build_wvp. */
+// Row-major world-view-projection.
 export function buildWvp(
   position: [number, number, number],
   lookAt: [number, number, number],

@@ -11,7 +11,7 @@ export function createFreeCam(): FreeCamState {
   return {
     enabled: false,
     position: [5, 0.5, 0],
-    yaw: Math.PI, // look toward -X / origin
+    yaw: Math.PI,
     pitch: -0.15,
     moveSpeed: 4.0,
     lookSpeed: 0.0025,
@@ -47,7 +47,7 @@ export function syncFreeCamFromTrack(
   cam.pitch = Math.atan2(dy, Math.max(horiz, 1e-6));
 }
 
-/** @returns true if any movement key is held */
+// Returns true if any movement key is held.
 export function updateFreeCam(
   cam: FreeCamState,
   keys: Set<string>,
@@ -59,7 +59,6 @@ export function updateFreeCam(
   const sy = Math.sin(cam.yaw);
   const cp = Math.cos(cam.pitch);
   const sp = Math.sin(cam.pitch);
-  // Full look-space basis (W follows pitch, not XZ-only).
   const fx = sy * cp;
   const fy = sp;
   const fz = -cy * cp;
@@ -110,7 +109,6 @@ export function applyFreeCamLook(cam: FreeCamState, dx: number, dy: number): voi
 
 export function adjustFreeCamSpeed(cam: FreeCamState, wheelDeltaY: number): void {
   if (!cam.enabled) return;
-  // Wheel up (negative delta) → faster.
   const factor = wheelDeltaY < 0 ? 1.1 : 1 / 1.1;
   cam.moveSpeed = Math.max(0.25, Math.min(80, cam.moveSpeed * factor));
 }

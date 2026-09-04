@@ -1,4 +1,4 @@
-/** Uniform buffer matching HLSL packoffset layout: 86 * 16 = 1376 bytes. */
+// Uniform buffer matching HLSL packoffset layout (86 × 16 = 1376 bytes).
 export const CB_FLOATS = 86 * 4;
 export const CB_BYTES = CB_FLOATS * 4;
 
@@ -25,7 +25,7 @@ export class LoadingConstants {
     this.data.set(v, 28);
   }
 
-  /** slice_times start at float offset 32 (c8). */
+  // Build stamps at c8 (float offset 32).
   setSliceTimes(buildTimes: Float32Array, slice: number): void {
     const window = 64 * slice;
     const wrap = slice === 31 ? buildTimes[0]! : buildTimes[64 * (slice + 1)]!;
@@ -40,8 +40,8 @@ export class LoadingConstants {
     }
   }
 
+  // Birthday-egg UV scale/bias (c73).
   setEggScales(v: [number, number, number, number]): void {
-    // c73 = float offset 73*4 = 292
     this.data.set(v, 292);
   }
 
@@ -62,7 +62,6 @@ export class LoadingConstants {
   }
 
   setLineConstant(line: number, start: number, end: number): void {
-    // c78 = float offset 78*4 = 312
     const o = 312 + line * 4;
     this.data[o] = start;
     this.data[o + 1] = end;

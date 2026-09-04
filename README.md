@@ -1,47 +1,35 @@
-# Halo 3 loading screen (TypeScript + WebGPU)
+### [View Loading Screen](https://craftycodie.github.io/Halo3LoadingScreen/)
 
-Faithful browser port of the Halo 3 / Xbox 360 `default_logs.xex` loading screen
-(CPU timing, geometry, RLE atlas, WGSL shaders).
 
-## Requirements
+# Halo 3 - Loading Screen 
 
-- Chrome or Edge with WebGPU enabled
-- Node.js 18+
+This is a WebGPU port of the loading screen for Halo 3 on the Xbox 360 created with a focus on parity with the original game.
 
-## Run
+## How
 
-```bash
-npm install
-npm run dev
-```
+Halo 3 Xbox 360 cache release_internal 11856.07.08.20.2332.release was used for reference.
+I dumped shaders from the game, ran them through a decompiler and gave [Claude Fable](https://www.anthropic.com/claude/fable) access to the game's code via an [Hex-Rays IDA Pro](https://hex-rays.com/ida-pro) [MCP](https://github.com/mrexodia/ida-pro-mcp) as a means to perform static analysis of the game binary.
+I used this to reimplement the loading screen within a Halo: The Master Chief Collection mod, and began reimplementing in WebGPU once this was near completion.
+Throughout the process I compared the scene against the game running on actual hardware.
 
-## Deploy
+## Controls
 
-Pushes to `main` build with Vite and publish to **GitHub Pages** via
-`.github/workflows/pages.yml`. Enable Pages in the repo settings
-(**Settings → Pages → Source: GitHub Actions**).
+The HUD stays locked until the first ring finishes, after that, **Esc** toggles the menu. Freecam: click the canvas for pointer lock, then WASD, Q/E, Shift, scroll for speed.
 
-## HUD / URL
-
-Controls stay hidden until the first ring build finishes (frac crosses 1 and the
-join reveal +2s completes). After that, **Esc** toggles the menu. Settings are
-mirrored in the query string:
-
-| Param | Meaning |
-|-------|---------|
-| `egg=1` | Easter egg on |
-| `loop=1` | Loop after ~3s |
-| `freecam=1` | Freecam on |
-| `load=30` | Simulated load seconds |
-| `hud=1` | Show controls immediately |
-| `hud=0` | Unlock after the ring, but keep the menu closed |
-| `speed=4` | Freecam move speed |
+| Control | URL | Notes |
+|---------|-----|--------|
+| Egg | `egg=1` | Birthday message texture + camera pull-back |
+| Loop | `loop=1` | Fade out and restart after ~3s |
+| Pause | — | Freezes the load clock; freecam still moves |
+| Freecam | `freecam=1` | Free look; `speed=4` sets move speed |
+| HD | `hd=0` to disable | On: full canvas RT. Off: 720p-tall ring, upscaled |
+| Load seconds | `load=30` | Simulated load duration |
+| Restart | — | Reset progress |
+| HUD | `hud=1` / `hud=0` | Open immediately, or unlock without opening |
 
 Example: `?egg=1&loop=1&load=45&hud=1`
 
-## Fidelity notes
+## Usage
+Feel free to use this project for whatever you want. Credit me if you feel like it, idc. 
 
-Progress, camera tracks, stamp tent, egg scales, additive ring pass order, and
-HSV composite `(0.5875, 0.65, 0.8333)` match the Xbox reference path. Final
-composite applies an sRGB OETF for WebGPU canvas presentation. Oldframe / menu
-grab is omitted.
+Have fun

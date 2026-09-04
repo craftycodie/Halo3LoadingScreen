@@ -3,6 +3,7 @@ import halo3LogoUrl from './assets/halo3-logo.png';
 import { buildAtlasTextures, decodeAtlas } from './atlas';
 import { buildWvp, evalCamera } from './camera';
 import {
+  expandLinesToQuads,
   expandQuads,
   fillFullscreenQuad,
   fillOverlayQuad,
@@ -29,16 +30,21 @@ import {
   type FreeCamState,
 } from './freecam';
 
-/** Match Xbox overlay_b NDC width: 256px * (overlayUnit*2) scale. */
+// Xbox overlay_b atlas is 256×32; opaque ink ~247×29.
 const OVERLAY_B_REF_WIDTH = 256;
 const OVERLAY_B_REF_SCALE = 2;
+const OVERLAY_B_CONTENT_WIDTH = 247;
+const OVERLAY_B_PAD_R = 5;
+const OVERLAY_B_PAD_B = 2;
+// Xbox HD framebuffer — point size / particle on-screen scale.
+const REF_FB_W = 1280;
+const REF_FB_H = 720;
 
 const GUIDE_HALF = [3.1415927, 2.5132742, 1.8849556, 1.2566371, 0.62831855];
 const GUIDE_RADIUS = [18.0, 19.0, 20.0, 21.0, 22.0];
 const GUIDE_SCALE = [0.05, 0.04, 0.03, 0.02, 0.01];
 const GUIDE_OTHER = [20.0, 24.0, 28.0, 32.0, 34.0];
 
-// 32 outlines + 5*48 guides + 32*2 points + 32 egg + 2 overlay + 1 composite
 const MAX_DRAWS = 400;
 
 const ADDITIVE: GPUBlendState = {
@@ -64,7 +70,7 @@ function createR8Texture(
     format: 'r8unorm',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST,
   });
-  // Copy into a tight ArrayBuffer-backed view so byteOffset is always 0.
+  // writeTexture wants byteOffset 0.
   const bytes = new Uint8Array(data);
   device.queue.writeTexture(
     { texture },
@@ -115,7 +121,7 @@ function createMeshBuffer(device: GPUDevice, data: Float32Array, label: string):
   return buffer;
 }
 
-/** Decode a white-on-black PNG into an R8 luminance atlas for ps_overlay. */
+// White-on-black PNG to R8 luminance for overlays.
 async function loadLogoR8(url: string): Promise<{ width: number; height: number; data: Uint8Array }> {
   const response = await fetch(url);
   if (!response.ok) {
@@ -187,7 +193,7 @@ export class LoadingScreenRenderer {
   private format!: GPUTextureFormat;
   private constants = new LoadingConstants();
 
-  /** 256-byte aligned uniform slots (WebGPU dynamic-offset requirement). */
+  // 256-byte-aligned uniform slots (WebGPU dynamic offsets).
   private uniformAlign = 256;
   private uniformSlotBytes = 0;
   private uniformSlotFloats = 0;
@@ -195,15 +201,15 @@ export class LoadingScreenRenderer {
   private uniformBuffer!: GPUBuffer;
   private uniformDraw = 0;
 
-  private bufEgg!: GPUBuffer;
-  private bufSuper!: GPUBuffer;
+  private bufRing!: GPUBuffer;
+  private bufOutline!: GPUBuffer;
   private bufGuide!: GPUBuffer;
   private bufPoint!: GPUBuffer;
   private bufOverlayB!: GPUBuffer;
   private bufOverlayA!: GPUBuffer;
   private bufFullscreen!: GPUBuffer;
-  private eggCount = 0;
-  private superCount = 0;
+  private ringCount = 0;
+  private outlineCount = 0;
   private guideCount = 0;
   private pointCount = 0;
 
@@ -219,16 +225,17 @@ export class LoadingScreenRenderer {
   private texParticle!: GPUTexture;
   private texOverlayA!: GPUTexture;
   private texOverlayB!: GPUTexture;
+  private texOverlayBHd!: GPUTexture;
   private texDummy!: GPUTexture;
-  private overlayBWidth = OVERLAY_B_REF_WIDTH;
-  private overlayBHeight = 32;
+  private overlayBHdWidth = OVERLAY_B_REF_WIDTH;
+  private overlayBHdHeight = 32;
 
   private sampLinear!: GPUSampler;
   private sampNearestClamp!: GPUSampler;
   private sampNearestWrap!: GPUSampler;
 
   private bgl!: GPUBindGroupLayout;
-  private pipeEgg!: GPURenderPipeline;
+  private pipeRing!: GPURenderPipeline;
   private pipeLines!: GPURenderPipeline;
   private pipePoints!: GPURenderPipeline;
   private pipeOverlay!: GPURenderPipeline;
@@ -237,15 +244,19 @@ export class LoadingScreenRenderer {
   private bgRing!: GPUBindGroup;
   private bgOverlayA!: GPUBindGroup;
   private bgOverlayB!: GPUBindGroup;
+  private bgOverlayBHd!: GPUBindGroup;
   private bgComposite: GPUBindGroup | null = null;
 
   private state: RingState = createRingState();
   private freecam: FreeCamState = createFreeCam();
   private keys = new Set<string>();
   private syncedFreecam = false;
+  // Birthday egg: message texture + camera pull-back.
   eggActive = false;
   loadSeconds = 30;
   loop = false;
+  // Off = 720p-tall ring RT, upscaled in composite.
+  hd = true;
   private ringFormat: GPUTextureFormat = 'rgba8unorm';
 
   setFreecam(enabled: boolean): void {
@@ -275,12 +286,11 @@ export class LoadingScreenRenderer {
     return this.freecam.moveSpeed;
   }
 
-  /** True once the first ring has finished the Xbox join reveal (frac≥1 + 2s). */
+  // True after first join reveal (frac ≥ 1 and stamp+2 hold).
   get firstPlayComplete(): boolean {
     if (this.state.completeElapsed < 0) {
       return false;
     }
-    // ps_egg / points: birth = stamp + 2. Same hold as fade_out's join wait.
     return this.state.elapsedSeconds - this.state.completeElapsed >= 2.0;
   }
 
@@ -312,19 +322,19 @@ export class LoadingScreenRenderer {
       colorSpace: 'srgb',
     });
 
-    this.ringFormat = 'rgba8unorm';
+    this.ringFormat = 'rgba16float';
 
     const geom = generateGeometry();
-    const eggTri = packVertices(expandQuads(geom.eggVerts));
-    const superPacked = packVertices(geom.superVerts);
-    const guidePacked = packVertices(geom.guideVerts);
+    const ringTri = packVertices(expandQuads(geom.ringVerts));
+    const outlinePacked = packVertices(expandLinesToQuads(geom.outlineVerts));
+    const guidePacked = packVertices(expandLinesToQuads(geom.guideVerts));
     const pointPacked = packVertices(geom.pointVerts);
-    this.eggCount = eggTri.length / 8;
-    this.superCount = superPacked.length / 8;
+    this.ringCount = ringTri.length / 8;
+    this.outlineCount = outlinePacked.length / 8;
     this.guideCount = guidePacked.length / 8;
     this.pointCount = pointPacked.length / 8;
-    this.bufEgg = createMeshBuffer(this.device, eggTri, 'egg');
-    this.bufSuper = createMeshBuffer(this.device, superPacked, 'super');
+    this.bufRing = createMeshBuffer(this.device, ringTri, 'ring');
+    this.bufOutline = createMeshBuffer(this.device, outlinePacked, 'outline');
     this.bufGuide = createMeshBuffer(this.device, guidePacked, 'guide');
     this.bufPoint = createMeshBuffer(this.device, pointPacked, 'point');
     this.bufOverlayB = this.device.createBuffer({
@@ -352,10 +362,17 @@ export class LoadingScreenRenderer {
     this.texMask = createR8Texture(this.device, 32, 4, tex.mask, 'mask');
     this.texEgg = createR8Texture(this.device, 138, 10, tex.egg, 'egg');
     this.texOverlayA = createR8Texture(this.device, 123, 47, tex.overlayA, 'overlayA');
+    this.texOverlayB = createR8Texture(this.device, 256, 32, tex.overlayB, 'overlayB');
     const logo = await loadLogoR8(halo3LogoUrl);
-    this.overlayBWidth = logo.width;
-    this.overlayBHeight = logo.height;
-    this.texOverlayB = createR8Texture(this.device, logo.width, logo.height, logo.data, 'overlayB');
+    this.overlayBHdWidth = logo.width;
+    this.overlayBHdHeight = logo.height;
+    this.texOverlayBHd = createR8Texture(
+      this.device,
+      logo.width,
+      logo.height,
+      logo.data,
+      'overlayB-hd',
+    );
     this.texParticle = createR8Texture(this.device, 16, 16, tex.particle, 'particle');
     this.texVolume = createR8Texture3D(this.device, 64, 32, 4, tex.volume);
     this.texDummy = createR8Texture(this.device, 1, 1, new Uint8Array([0]), 'dummy');
@@ -425,13 +442,13 @@ export class LoadingScreenRenderer {
       );
     }
 
-    this.pipeEgg = createPipeline(
+    this.pipeRing = createPipeline(
       this.device, module, pipelineLayout, this.ringFormat,
-      'vs_egg', 'ps_egg', 'triangle-list', ADDITIVE, 'egg',
+      'vs_ring', 'ps_ring', 'triangle-list', ADDITIVE, 'ring',
     );
     this.pipeLines = createPipeline(
       this.device, module, pipelineLayout, this.ringFormat,
-      'vs_lines', 'ps_lines', 'line-list', ADDITIVE, 'lines',
+      'vs_lines', 'ps_lines', 'triangle-list', ADDITIVE, 'lines',
     );
     this.pipePoints = createPipeline(
       this.device, module, pipelineLayout, this.ringFormat,
@@ -449,6 +466,7 @@ export class LoadingScreenRenderer {
     this.bgRing = this.makeBindGroup(this.texDummy.createView());
     this.bgOverlayA = this.makeBindGroup(this.texOverlayA.createView());
     this.bgOverlayB = this.makeBindGroup(this.texOverlayB.createView());
+    this.bgOverlayBHd = this.makeBindGroup(this.texOverlayBHd.createView());
   }
 
   private makeBindGroup(sourceView: GPUTextureView): GPUBindGroup {
@@ -507,14 +525,13 @@ export class LoadingScreenRenderer {
     this.uniformDraw = 0;
   }
 
-  /** Snapshot current constants into the next dynamic-offset slot; return byte offset. */
+  // Copy constants into the next dynamic-offset slot; return byte offset.
   private pushUniforms(): number {
     if (this.uniformDraw >= MAX_DRAWS) {
       throw new Error('uniform slot overflow');
     }
     const floatBase = this.uniformDraw * this.uniformSlotFloats;
     this.uniformCpu.set(this.constants.data, floatBase);
-    // Clear padding between CB_BYTES and slot end (not strictly required).
     const offset = this.uniformDraw * this.uniformSlotBytes;
     this.uniformDraw++;
     return offset;
@@ -545,7 +562,6 @@ export class LoadingScreenRenderer {
     pass.draw(vertexCount);
   }
 
-  /** Debug snapshot for smoke tests. */
   getDebug(): {
     smoothedFrac: number;
     filteredFrac: number;
@@ -564,7 +580,6 @@ export class LoadingScreenRenderer {
 
   frame(nowMs: number, dt = 1 / 60): void {
     const canvas = this.context.canvas as HTMLCanvasElement;
-    // Cap DPR — full-res 4K × 3M point tris is unplayable in browser.
     const dpr = Math.min(window.devicePixelRatio || 1, 1.25);
     const width = Math.max(1, Math.floor(canvas.clientWidth * dpr));
     const height = Math.max(1, Math.floor(canvas.clientHeight * dpr));
@@ -574,8 +589,6 @@ export class LoadingScreenRenderer {
     }
 
     updateProgress(this.state, 1.0, nowMs, this.loadSeconds);
-    // Loop: Xbox fade-out (latch near frac 0.9, dim ~2.9s, join+2 hold), then
-    // reset once black. Non-loop stays lit after complete.
     if (this.loop && updateFadeOut(this.state, nowMs)) {
       resetRingState(this.state);
       this.syncedFreecam = false;
@@ -583,6 +596,9 @@ export class LoadingScreenRenderer {
     }
 
     const aspect = height > 0 ? width / height : 16 / 9;
+    const ringH = this.hd ? height : 720;
+    const ringW = this.hd ? width : Math.max(1, Math.round(ringH * aspect));
+
     const trackCam = evalCamera(
       this.state.filteredFrac,
       this.state.smoothedFrac,
@@ -615,27 +631,30 @@ export class LoadingScreenRenderer {
     this.constants.setVertexTimescale([0, 0, this.state.smoothedFrac, this.state.elapsedSeconds]);
     this.constants.setPixelTimescale([0, 0, this.state.smoothedFrac, this.state.elapsedSeconds]);
 
-    // Full framebuffer resolution (DPR-capped above). Shaders take inv_extent
-    // from these sizes — no 720p lock.
-    const ringW = width;
-    const ringH = height;
-
-    // Overlay NDC sized like Xbox 720p, but on a virtual screen with this
-    // buffer's aspect so logos stay right-aligned and unstretched.
-    const overlayUnit = width >= 1280 ? 2.0 : 1.5;
+    // Overlay NDC uses a 720p-tall virtual screen at this RT's aspect.
+    const overlayUnit = ringW >= 1280 ? 2.0 : 1.5;
     const virtH = 720;
     const virtW = Math.max(1, virtH * (ringW / ringH));
-    // Preserve Xbox Halo-logo NDC width while using the custom texture aspect.
-    const overlayBScale =
-      overlayUnit * OVERLAY_B_REF_SCALE * (OVERLAY_B_REF_WIDTH / this.overlayBWidth);
+    const atlasOverlayScale = overlayUnit * OVERLAY_B_REF_SCALE;
+    const overlayBTexW = this.hd ? this.overlayBHdWidth : OVERLAY_B_REF_WIDTH;
+    const overlayBTexH = this.hd ? this.overlayBHdHeight : 32;
+    const overlayBScale = this.hd
+      ? atlasOverlayScale * (OVERLAY_B_CONTENT_WIDTH / this.overlayBHdWidth)
+      : atlasOverlayScale;
+    const overlayBAnchorX = this.hd
+      ? 0.85 - (OVERLAY_B_PAD_R / virtW) * atlasOverlayScale
+      : 0.85;
+    const overlayBAnchorY = this.hd
+      ? -0.55 + (OVERLAY_B_PAD_B / virtH) * atlasOverlayScale
+      : -0.55;
     const overlayB = new Float32Array(6 * 8);
     const overlayA = new Float32Array(6 * 8);
     fillOverlayQuad(
       overlayB,
-      0.85,
-      -0.55,
-      this.overlayBWidth,
-      this.overlayBHeight,
+      overlayBAnchorX,
+      overlayBAnchorY,
+      overlayBTexW,
+      overlayBTexH,
       overlayBScale,
       virtW,
       virtH,
@@ -660,7 +679,13 @@ export class LoadingScreenRenderer {
         ],
       });
 
-      this.constants.setPassModes([1, 0, 0, 0]);
+      // Lines use RT size (1px @ 720p). Points lock Xbox 1280×720 extents.
+      const invRingX = 1 / ringW;
+      const invRingY = 1 / ringH;
+      const invPtX = 1 / REF_FB_W;
+      const invPtY = 1 / REF_FB_H;
+
+      this.constants.setPassModes([1, 0, invRingX, invRingY]);
       for (let slice = 0; slice < SLICE_COUNT; slice++) {
         this.constants.setTheta([
           slice * 0.03125 * TWO_PI,
@@ -676,31 +701,27 @@ export class LoadingScreenRenderer {
           const end = this.state.lineEnds[group * 6 + line]!;
           this.constants.setLineConstant(line, mirror ? end : start, mirror ? start : end);
         }
-        this.draw(ringPass, this.pipeLines, this.bgRing, this.bufSuper, this.superCount);
+        this.draw(ringPass, this.pipeLines, this.bgRing, this.bufOutline, this.outlineCount);
       }
 
-      if (lit > 0.02) {
-        this.constants.setPassModes([0, 0, 0, 0]);
-        for (let ring = 0; ring < 5; ring++) {
-          const half = GUIDE_HALF[ring]!;
-          const radius = GUIDE_RADIUS[ring]!;
-          const scale = GUIDE_SCALE[ring]! * 0.4;
-          const other = GUIDE_OTHER[ring]! / Math.sin(half * 0.5);
-          for (let rot = 0; rot < 48; rot++) {
-            this.constants.setTheta([
-              rot * 0.020833334 * TWO_PI,
-              0.1308997,
-              -half * 0.5,
-              half,
-            ]);
-            this.constants.setOther([radius, other, scale, 0.0]);
-            this.draw(ringPass, this.pipeLines, this.bgRing, this.bufGuide, this.guideCount);
-          }
+      this.constants.setPassModes([0, 0, invRingX, invRingY]);
+      for (let ring = 0; ring < 5; ring++) {
+        const half = GUIDE_HALF[ring]!;
+        const radius = GUIDE_RADIUS[ring]!;
+        const scale = GUIDE_SCALE[ring]! * 0.4;
+        const other = GUIDE_OTHER[ring]! / Math.sin(half * 0.5);
+        for (let rot = 0; rot < 48; rot++) {
+          this.constants.setTheta([
+            rot * 0.020833334 * TWO_PI,
+            0.1308997,
+            -half * 0.5,
+            half,
+          ]);
+          this.constants.setOther([radius, other, scale, 0.0]);
+          this.draw(ringPass, this.pipeLines, this.bgRing, this.bufGuide, this.guideCount);
         }
       }
 
-      const invX = 1 / ringW;
-      const invY = 1 / ringH;
       for (let slice = 0; slice < SLICE_COUNT; slice++) {
         this.constants.setTheta([
           slice * 0.03125 * TWO_PI,
@@ -711,9 +732,7 @@ export class LoadingScreenRenderer {
         this.constants.setOther([4.0, 0.050000191, 0.25, 0.0]);
         this.constants.setSliceTimes(this.state.buildTimes, slice);
         for (let ambient = 0; ambient < 2; ambient++) {
-          // vs_points: oPts is framebuffer pixels → NDC via 1/extent per axis
-          // (actual RT size, not locked 720p).
-          this.constants.setPassModes([0, ambient, invX, invY]);
+          this.constants.setPassModes([0, ambient, invPtX, invPtY]);
           this.draw(ringPass, this.pipePoints, this.bgRing, this.bufPoint, this.pointCount);
         }
       }
@@ -736,13 +755,19 @@ export class LoadingScreenRenderer {
           0,
         ]);
         this.constants.setSliceTimes(this.state.buildTimes, slice);
-        this.draw(ringPass, this.pipeEgg, this.bgRing, this.bufEgg, this.eggCount);
+        this.draw(ringPass, this.pipeRing, this.bgRing, this.bufRing, this.ringCount);
       }
 
       const overlayFade = fade * trackCam.fadeA;
       this.constants.setPassModes([0, 0, 0, 0]);
       this.constants.setCompositeControl([overlayFade, overlayFade, overlayFade, 1]);
-      this.draw(ringPass, this.pipeOverlay, this.bgOverlayB, this.bufOverlayB, 6);
+      this.draw(
+        ringPass,
+        this.pipeOverlay,
+        this.hd ? this.bgOverlayBHd : this.bgOverlayB,
+        this.bufOverlayB,
+        6,
+      );
       this.draw(ringPass, this.pipeOverlay, this.bgOverlayA, this.bufOverlayA, 6);
 
       ringPass.end();
@@ -763,7 +788,6 @@ export class LoadingScreenRenderer {
     this.draw(displayPass, this.pipeComposite, this.bgComposite!, this.bufFullscreen, 6);
     displayPass.end();
 
-    // Uniforms must land before the command buffer runs.
     this.flushUniforms();
     this.device.queue.submit([encoder.finish()]);
   }

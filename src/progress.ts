@@ -73,7 +73,6 @@ export function resetRingState(state: RingState): void {
   state.sliceA.fill(1.0);
   state.sliceB.fill(0.0);
 
-  // 82588CE0: 16 chained groups
   let rng = (Math.imul(1664525, 0xcafe) + 1013904223) >>> 0;
   for (let group = 0; group < 16; group++) {
     for (let line = 0; line < 6; line++) {
@@ -122,7 +121,6 @@ function stampBuildTimes(
   }
 }
 
-/** 82588960 progress update. */
 export function updateProgress(
   state: RingState,
   remainder: number,
@@ -188,9 +186,7 @@ export function updateProgress(
   state.smoothedFrac = oldFrac + state.velocity * dt;
   if (state.smoothedFrac < 0.0) state.smoothedFrac = 0.0;
 
-  // 90-tap is 90 Xbox frames (3 s wall-clock). Emit one sample per 1/30 s so
-  // display refresh rate does not change the camera lag window. Progress and
-  // velocity already use real dt (render FPS-independent).
+  // 90-tap camera filter at 30 Hz so refresh rate does not change lag.
   state.cameraTickAccum += dt;
   while (state.cameraTickAccum >= k30hz * 0.9) {
     applyCameraFilter(state, state.smoothedFrac);
@@ -205,11 +201,7 @@ export function updateProgress(
   }
 }
 
-/**
- * Xbox 825884E0 fade-out latch / done check.
- * Latches fade_start near frac 0.9 (once velocity has caught up), then returns
- * true after ~3s wall-clock and the join reveal (complete + 2s).
- */
+// Latch fade near frac 0.9; true after ~3s and join reveal (complete + 2s).
 export function updateFadeOut(state: RingState, nowMs: number): boolean {
   if (state.smoothedFrac < 0.9) {
     return false;
@@ -230,7 +222,7 @@ export function updateFadeOut(state: RingState, nowMs: number): boolean {
   return fadeElapsed >= 3.0;
 }
 
-/** 82588B80: 1 - (now - fade_start) * (1/2900). Full black in ~2.9s. */
+// Fade to black over ~2.9s after latch.
 export function computeFade(state: RingState, nowMs: number): number {
   if (state.fadeStartMs === 0xffffffff) {
     return 1.0;

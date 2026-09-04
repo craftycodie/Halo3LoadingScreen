@@ -1,31 +1,31 @@
 const TWO_PI: f32 = 6.28318548;
 const PI: f32 = 3.14159274;
-const INV_TWO_PI: f32 = 0.159154937; // 1 / (2π)
+const INV_TWO_PI: f32 = 0.159154937;
 const INV_255: f32 = 0.0039215689;
 
 struct LoadingCB {
-  mat_world_view_proj: mat4x4f,       // c0..c3
-  theta_scales: vec4f,                // c4  — sector angle / span
-  other_scales: vec4f,                // c5  — radius / height scales
-  vertex_timescale: vec4f,            // c6  — .z = smoothedFrac, .w = elapsed
-  pass_modes: vec4f,                  // c7  — .x outline|guide, .y ambient, .zw = 1/extent
-  slice_times: array<vec4f, 65>,      // c8..c72 — build stamps per tent sample
-  egg_scales: vec4f,                  // c73 — easter-egg UV scale/bias
-  pixel_timescale: vec4f,             // c74 — same as vertex timescale for PS
-  pixel_inverse_volume: vec4f,        // c75 — 1/volume dims; .w = light intensity
-  pixel_volume: vec4f,                // c76 — volume dims (64, 32, 4, …)
-  composite_control: vec4f,           // c77 — HSV / overlay fade
-  line_constants: array<vec4f, 8>,    // c78..c85 — outline start/end radii
+  mat_world_view_proj: mat4x4f,    // c0..c3
+  theta_scales: vec4f,             // c4 — sector angle / span
+  other_scales: vec4f,             // c5 — radius / height
+  vertex_timescale: vec4f,         // c6 — .z smoothedFrac, .w elapsed
+  pass_modes: vec4f,               // c7 — .x outline|guide, .y ambient, .zw 1/extent
+  slice_times: array<vec4f, 65>,   // c8..c72 — build stamps
+  egg_scales: vec4f,               // c73 — birthday-egg UV scale/bias
+  pixel_timescale: vec4f,          // c74
+  pixel_inverse_volume: vec4f,     // c75 — 1/volume dims; .w intensity
+  pixel_volume: vec4f,             // c76 — (64, 32, 4, …)
+  composite_control: vec4f,        // c77 — HSV / overlay fade
+  line_constants: array<vec4f, 8>, // c78..c85 — outline start/end radii
 }
 
 @group(0) @binding(0) var<uniform> cb: LoadingCB;
 
-@group(0) @binding(1)  var cell_sampler: texture_2d<f32>;
-@group(0) @binding(2)  var mask_sampler: texture_2d<f32>;
-@group(0) @binding(3)  var egg_sampler: texture_2d<f32>;
-@group(0) @binding(4)  var volume_sampler: texture_3d<f32>;
-@group(0) @binding(5)  var particle_sampler: texture_2d<f32>;
-@group(0) @binding(6)  var source_sampler: texture_2d<f32>;
+@group(0) @binding(1)  var tex_cell: texture_2d<f32>;
+@group(0) @binding(2)  var tex_mask: texture_2d<f32>;
+@group(0) @binding(3)  var tex_egg: texture_2d<f32>;
+@group(0) @binding(4)  var tex_volume: texture_3d<f32>;
+@group(0) @binding(5)  var tex_particle: texture_2d<f32>;
+@group(0) @binding(6)  var tex_source: texture_2d<f32>;
 
 @group(0) @binding(7)  var samp_cell: sampler;
 @group(0) @binding(8)  var samp_mask: sampler;
@@ -34,13 +34,9 @@ struct LoadingCB {
 @group(0) @binding(11) var samp_particle: sampler;
 @group(0) @binding(12) var samp_source: sampler;
 
-// -----------------------------------------------------------------------------
-// Vertex I/O
-// -----------------------------------------------------------------------------
-
 struct VsIn {
-  @location(0) attr0: vec4f, // xyz = lattice / position; .w = volume seed (points)
-  @location(1) attr1: vec4f, // stage-specific (normal, line id, jitter, …)
+  @location(0) attr0: vec4f,
+  @location(1) attr1: vec4f,
   @builtin(vertex_index) vid: u32,
 }
 
@@ -66,14 +62,6 @@ fn gray4(g: f32) -> vec4f {
   return vec4f(g, g, g, g);
 }
 
-fn gray4_opaque(g: f32) -> vec4f {
-  return vec4f(g, g, g, 1.0);
-}
-
-// -----------------------------------------------------------------------------
-// Shared math
-// -----------------------------------------------------------------------------
-
 fn mul_row_major(v: vec4f, m: mat4x4f) -> vec4f {
   return v.x * m[0] + v.y * m[1] + v.z * m[2] + v.w * m[3];
 }
@@ -84,8 +72,7 @@ fn wrap_angle(theta: f32) -> f32 {
   return n * TWO_PI - PI;
 }
 
-// Xbox vs_egg / vs_points:
-//   r = (sin*r, cos*r, height), then dp4 cN.zxyw → (cos*r, height, sin*r).
+// Lattice (u,v,w) to polar (angle, height, radius), then world XYZ.
 fn ring_polar(u: f32, v: f32, w: f32, theta: vec4f, other: vec4f) -> vec3f {
   let angle = wrap_angle((u * 0.015625) * theta.y + theta.x);
   let height = (v * 0.03125) * other.z;
@@ -104,11 +91,9 @@ fn ring_position(u: f32, v: f32, w: f32, theta: vec4f, other: vec4f) -> vec3f {
 }
 
 fn is_finite_f32(x: f32) -> bool {
-  // Exponent all-ones ⇒ Inf/NaN.
   return (bitcast<u32>(x) & 0x7f800000u) != 0x7f800000u;
 }
 
-// Expand a POINTLIST centre into a screen-space quad (vid % 6).
 fn point_quad_corner(vid: u32) -> vec2f {
   let corner_id = vid % 6u;
   if (corner_id == 0u) { return vec2f(-1.0, -1.0); }
@@ -119,18 +104,8 @@ fn point_quad_corner(vid: u32) -> vec2f {
   return vec2f(1.0, 1.0);
 }
 
-// -----------------------------------------------------------------------------
-// Texture helpers (Xbox POINT / BORDER semantics)
-// -----------------------------------------------------------------------------
-
-fn sample_r8_point_border(
-  tex: texture_2d<f32>,
-  samp: sampler,
-  uv: vec2f,
-) -> f32 {
-  // Xbox POINT+BORDER (82201B68 mode 3): outside [0,1] including uv==1.0 → 0.
-  // Egg mesh edges sit at v=32 / w=4 → UV 1.0; sampling the last texel there
-  // leaves a noisy ghost rim on the outer ring.
+// Xbox POINT+BORDER: outside [0,1), including uv == 1.0, returns 0.
+fn sample_r8_point_border(tex: texture_2d<f32>, samp: sampler, uv: vec2f) -> f32 {
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
     return 0.0;
   }
@@ -138,21 +113,18 @@ fn sample_r8_point_border(
 }
 
 fn sample_volume_point_wrap(uvw: vec3f) -> f32 {
-  // Xbox volume tf0: POINT + WRAP, continuous UV (same as Ares Sample).
-  return textureSampleLevel(volume_sampler, samp_volume, uvw, 0.0).r;
+  return textureSampleLevel(tex_volume, samp_volume, uvw, 0.0).r;
 }
 
 fn sample_mask_point_border(uv: vec2f) -> f32 {
-  return sample_r8_point_border(mask_sampler, samp_mask, uv);
+  return sample_r8_point_border(tex_mask, samp_mask, uv);
 }
 
-// Clamp-to-edge would sample the glyph edge and zero the ring via (1 - egg).
 fn sample_egg_point_border(uv: vec2f) -> f32 {
-  return sample_r8_point_border(egg_sampler, samp_egg, uv);
+  return sample_r8_point_border(tex_egg, samp_egg, uv);
 }
 
-// Xbox vs_composite2 / ps_egg cell UV from volume fraction + face normal.
-fn xbox_cell_uv(frac0: vec3f, n: vec3f) -> vec2f {
+fn cell_uv(frac0: vec3f, n: vec3f) -> vec2f {
   let an = abs(n);
   return vec2f(
     frac0.y * an.x + frac0.x * an.y + an.z * frac0.x,
@@ -160,8 +132,8 @@ fn xbox_cell_uv(frac0: vec3f, n: vec3f) -> vec2f {
   );
 }
 
-// Age envelope → (lo, hi, rim) for ps_egg face lighting.
-fn xbox_egg_age_lo_hi_rim(age: f32) -> vec3f {
+// Face lighting envelope (lo, hi, rim) from build age.
+fn face_age_envelope(age: f32) -> vec3f {
   let early = select(0.0, 1.0, age <= 0.25);
   let late = select(0.0, 1.0, age >= 1.0);
   let mid = (1.0 - early) * (1.0 - late);
@@ -186,16 +158,16 @@ fn linear_to_srgb(c: vec3f) -> vec3f {
   return select(lo, hi, c > vec3f(0.0031308));
 }
 
-// =============================================================================
-// Vertex shaders
-// =============================================================================
+// -----------------------------------------------------------------------------
+// Ring body (lattice bands / radials / floors)
+// t0 = volume UVW; .w = 1 if mask is baked into verts
+// t1 = face normal
+// t2 = (a6, a7, sector progress, baked mask)
+// t3 = birthday-egg atlas UV
+// -----------------------------------------------------------------------------
 
 @vertex
-fn vs_egg(v: VsIn) -> VsOut {
-  // t0 = volume UVW
-  // t1 = face normal (attr1)
-  // t2 = (a6, a7, sector progress, 0)
-  // t3 = egg atlas UV
+fn vs_ring(v: VsIn) -> VsOut {
   var o: VsOut;
   let u = v.attr0.x;
   let v_coord = v.attr0.y;
@@ -206,44 +178,91 @@ fn vs_egg(v: VsIn) -> VsOut {
 
   let egg_v = v_coord * 0.05 - 0.1875;
   let sector_u = u * 0.015625;
-  o.t0 = vec4f(sector_u, v_coord * 0.03125, w * 0.25, 1.0);
+
+  let flags = i32(v.attr1.w + 0.5);
+  let mask_baked = (flags & 4) != 0;
+  let a6 = select(v.attr0.w, select(0.0, 1.0, (flags & 1) != 0), mask_baked);
+  let a7 = select(v.attr1.w, select(0.0, 1.0, (flags & 2) != 0), mask_baked);
+  let mask_vert = select(0.0, v.attr0.w, mask_baked);
+
+  o.t0 = vec4f(sector_u, v_coord * 0.03125, w * 0.25, select(0.0, 1.0, mask_baked));
   o.t1 = v.attr1;
   o.t2 = vec4f(
-    v.attr0.w,
-    v.attr1.w,
+    a6,
+    a7,
     sector_u * cb.theta_scales.w + cb.theta_scales.z,
-    0.0,
+    mask_vert,
   );
   o.t3 = vec4f(sector_u * cb.egg_scales.y + cb.egg_scales.x, 1.0 - egg_v, 0.0, 0.0);
   return o;
 }
 
-@vertex
-fn vs_lines(v: VsIn) -> VsOut {
-  // pass_modes.x > 0.5 → outline (!b4): polar ring + radius-off in t0.x
-  // pass_modes.x < 0.5 → guides (b4): spherical patch
-  var o: VsOut;
-  let u = v.attr0.x;
-  let v_coord = v.attr0.y;
-  let w = v.attr0.z;
-  let line_id = v.attr1.x;
-  var world: vec3f;
+struct LineWorld {
+  pos: vec3f,
+  t0: vec4f,
+}
 
+fn line_world(attr0: vec4f, line_id: f32) -> LineWorld {
+  let u = attr0.x;
+  let v_coord = attr0.y;
+  let w = attr0.z;
+  var out: LineWorld;
   if (cb.pass_modes.x > 0.5) {
+    // Outline: polar ring; t0.x = radius offset along the line.
     let idx = clamp(i32(line_id), 0, 7);
     let t = clamp(u * 0.015625, 0.0, 1.0);
-    world = ring_position(u, v_coord, w, cb.theta_scales, cb.other_scales);
+    out.pos = ring_position(u, v_coord, w, cb.theta_scales, cb.other_scales);
     let radius_off = mix(cb.line_constants[idx].x, cb.line_constants[idx].y, t);
-    o.t0 = vec4f(radius_off, 0.0, 0.0, 1.0);
+    out.t0 = vec4f(radius_off, 0.0, 0.0, 1.0);
   } else {
+    // Guide cage: spherical patch; t0.x = u * other.z / 256.
     let a = wrap_angle((u * 0.004032258) * cb.theta_scales.w + cb.theta_scales.z);
     let b = wrap_angle((w * 0.16666667) * cb.theta_scales.y + cb.theta_scales.x);
     let radial = cb.other_scales.x * cos(a);
-    world = vec3f(cos(b) * radial, sin(a) * cb.other_scales.y, sin(b) * radial);
-    o.t0 = vec4f(u * cb.other_scales.z * 0.00390625, 0.0, 0.0, 1.0);
+    out.pos = vec3f(cos(b) * radial, sin(a) * cb.other_scales.y, sin(b) * radial);
+    out.t0 = vec4f(u * cb.other_scales.z * 0.00390625, 0.0, 0.0, 1.0);
   }
+  return out;
+}
 
-  o.pos = mul_row_major(vec4f(world, 1.0), cb.mat_world_view_proj);
+// Thick line quads: 1px at 720p, scales with RT height. pass_modes.zw = 1/ring size.
+@vertex
+fn vs_lines(v: VsIn) -> VsOut {
+  var o: VsOut;
+  let a0 = v.attr0;
+  let b0 = vec4f(v.attr1.xyz, 0.0);
+  let line_id = v.attr1.w;
+
+  let world_a = line_world(a0, line_id);
+  let world_b = line_world(b0, line_id);
+  var clip_a = mul_row_major(vec4f(world_a.pos, 1.0), cb.mat_world_view_proj);
+  var clip_b = mul_row_major(vec4f(world_b.pos, 1.0), cb.mat_world_view_proj);
+
+  let corner = v.vid % 6u;
+  let end = select(0.0, 1.0, corner == 2u || corner == 4u || corner == 5u);
+  let side = select(-1.0, 1.0, corner == 1u || corner == 2u || corner == 4u);
+  var clip = mix(clip_a, clip_b, end);
+
+  let inv_extent = max(cb.pass_modes.zw, vec2f(1.0e-6));
+  let res = 1.0 / inv_extent;
+  let ndc_a = clip_a.xy / max(clip_a.w, 1.0e-6);
+  let ndc_b = clip_b.xy / max(clip_b.w, 1.0e-6);
+  let p0 = (ndc_a * 0.5 + 0.5) * res;
+  let p1 = (ndc_b * 0.5 + 0.5) * res;
+  var dir = p1 - p0;
+  let len = length(dir);
+  if (len > 1.0e-6) {
+    dir = dir / len;
+  } else {
+    dir = vec2f(1.0, 0.0);
+  }
+  let perp = vec2f(-dir.y, dir.x);
+  let thickness_px = max(res.y * (1.0 / 720.0), 1.0);
+  let offset_ndc = (perp * side * (0.5 * thickness_px)) / res * 2.0;
+  clip = vec4f(clip.xy + offset_ndc * clip.w, clip.z, clip.w);
+
+  o.pos = clip;
+  o.t0 = select(world_b.t0, world_a.t0, end < 0.5);
   o.t1 = vec4f(0.0);
   o.t2 = vec4f(0.0);
   o.t3 = vec4f(0.0);
@@ -252,12 +271,11 @@ fn vs_lines(v: VsIn) -> VsOut {
 
 @vertex
 fn vs_points(v: VsIn) -> VsOut {
-  // t0 = (sprite UV, intensity, 1)
   var o: VsOut;
   let u = v.attr0.x;
   let v_coord = v.attr0.y;
   let w = v.attr0.z;
-  let vol = v.attr0.w * INV_255; // Xbox UBYTE4 / 255
+  let vol = v.attr0.w * INV_255;
 
   var polar = ring_polar(u + 0.5, v_coord + 0.5, w + 0.5, cb.theta_scales, cb.other_scales);
   var angle = polar.x;
@@ -269,14 +287,12 @@ fn vs_points(v: VsIn) -> VsOut {
   var intensity = 0.002;
 
   if (ambient > 0.5) {
-    // Ambient sparkle: jitter from attr1, fixed intensity.
     angle += v.attr1.x;
     radius += v.attr1.y;
     height += v.attr1.z;
     pts_base = abs(v.attr1.x) * 50.0 + 4.0;
     intensity = 0.002;
   } else {
-    // Build particles: fly in before stamp+2, then settle.
     var idx = i32(trunc(u));
     idx = clamp(idx, 0, 64);
 
@@ -306,8 +322,7 @@ fn vs_points(v: VsIn) -> VsOut {
     return empty_vs_out();
   }
 
-  // Xbox oPts = pts_base / clip.z; intensity /= max(0.25*z, 0.25).
-  // oPts is framebuffer pixels; pass_modes.zw = 1/width, 1/height.
+  // oPts is framebuffer pixels; pass_modes.zw locks Xbox 1280×720 extents.
   let corner = point_quad_corner(v.vid);
   let o_pts = clamp(pts_base / clip.z, 1.0, 64.0);
   intensity = intensity / max(0.25 * clip.z, 0.25);
@@ -333,17 +348,15 @@ fn vs_screen(v: VsIn) -> VsOut {
   return o;
 }
 
-// =============================================================================
-// Pixel shaders
-// =============================================================================
-
 @fragment
-fn ps_egg(i: VsOut) -> @location(0) vec4f {
+fn ps_ring(i: VsOut) -> @location(0) vec4f {
   let uvw0 = i.t0.xyz;
   let normal = i.t1.xyz;
-  let weight0 = i.t2.x; // a6
-  let weight1 = i.t2.y; // a7
+  let weight0 = i.t2.x;
+  let weight1 = i.t2.y;
   let progress = i.t2.z;
+  let mask_vert = i.t2.w;
+  let mask_baked = i.t0.w > 0.5;
   let egg_uv = i.t3.xy;
 
   let uvw1 = uvw0 - normal * cb.pixel_inverse_volume.xyz;
@@ -361,15 +374,15 @@ fn ps_egg(i: VsOut) -> @location(0) vec4f {
   let age0 = cb.pixel_timescale.w - delay0;
   let age1 = cb.pixel_timescale.w - delay1;
 
-  let cell = textureSample(cell_sampler, samp_cell, xbox_cell_uv(frac0, normal)).r;
-  let mask0 = sample_mask_point_border(uvw0.yz);
-  let mask1 = sample_mask_point_border(uvw1.yz);
+  let cell = textureSample(tex_cell, samp_cell, cell_uv(frac0, normal)).r;
+  let mask0 = select(sample_mask_point_border(uvw0.yz), mask_vert, mask_baked);
+  let mask1 = select(sample_mask_point_border(uvw1.yz), mask_vert, mask_baked);
   let built0 = select(0.0, 1.0, cb.pixel_timescale.w >= delay0);
   let built1 = select(0.0, 1.0, cb.pixel_timescale.w >= delay1);
 
-  let env0 = xbox_egg_age_lo_hi_rim(age0);
-  let env1 = xbox_egg_age_lo_hi_rim(age1);
-  let face0 = max(mix(env0.y, env0.z, cell), 0.0); // mix(hi, rim, cell)
+  let env0 = face_age_envelope(age0);
+  let env1 = face_age_envelope(age1);
+  let face0 = max(mix(env0.y, env0.z, cell), 0.0);
   let face1 = max(mix(env1.y, env1.z, cell), 0.0);
 
   let lit = cb.pixel_inverse_volume.w;
@@ -384,12 +397,11 @@ fn ps_egg(i: VsOut) -> @location(0) vec4f {
 fn ps_lines(i: VsOut) -> @location(0) vec4f {
   let fade = cb.pixel_inverse_volume.w;
 
-  // Guides: flat intensity from t0.x
   if (cb.pass_modes.x < 0.5) {
-    return gray4_opaque(i.t0.x * fade);
+    // Guide cage: brightness × intensity (float RT fades all tiers together).
+    return gray4(i.t0.x * fade);
   }
 
-  // Outlines: tip / mid / body pulse along remaining radius
   let remain = cb.pixel_timescale.z - i.t0.x;
   if (remain < 0.0) {
     return vec4f(0.0);
@@ -404,38 +416,33 @@ fn ps_lines(i: VsOut) -> @location(0) vec4f {
   gray += mid * ((remain - 0.001) * -22.222223 + 0.4);
   gray += (remain * 400.0) * tip;
   gray *= fade;
-  return gray4_opaque(gray);
+  return gray4(gray);
 }
 
 @fragment
 fn ps_points(i: VsOut) -> @location(0) vec4f {
-  let sprite = textureSample(particle_sampler, samp_particle, i.t0.xy).r;
+  let sprite = textureSample(tex_particle, samp_particle, i.t0.xy).r;
   let gray = sprite * i.t0.z * 4.0 * cb.pixel_inverse_volume.w;
   return gray4(gray);
 }
 
 @fragment
 fn ps_overlay(i: VsOut) -> @location(0) vec4f {
-  let alpha = textureSample(source_sampler, samp_source, i.t0.xy).r;
+  let alpha = textureSample(tex_source, samp_source, i.t0.xy).r;
   let rgb = alpha * cb.composite_control.xyz;
   return vec4f(rgb, 1.0);
 }
 
 @fragment
 fn ps_composite(i: VsOut) -> @location(0) vec4f {
-  let src = textureSample(source_sampler, samp_source, i.t0.xy);
+  let src = textureSample(tex_source, samp_source, i.t0.xy);
   var rgb = xbox_ps_composite_colorize(src.r, cb.composite_control);
   rgb *= cb.composite_control.w;
-  // WebGPU canvas is sRGB; encode so presentation matches D3D UNORM viewing.
   rgb = linear_to_srgb(rgb);
   return vec4f(rgb, 1.0);
 }
 
-// =============================================================================
-// Xbox ps_composite colorize — faithful b132 register dance
-// (carve-embedded constants c253 / c254 / c255). Do not “simplify”.
-// =============================================================================
-
+// Xbox ps_composite HSV colorize — keep register dance; do not simplify.
 fn xbox_ps_composite_colorize(tex_r: f32, c11: vec4f) -> vec3f {
   let c253 = vec4f(-1.0, 0.0, 0.66666669, 0.5);
   let c254 = vec4f(6.0, 3.0, 0.33333334, -0.33333334);
@@ -449,7 +456,6 @@ fn xbox_ps_composite_colorize(tex_r: f32, c11: vec4f) -> vec3f {
   var r5 = vec4f(0.0);
   var r6 = vec4f(0.0);
 
-  // --- Hue offsets from composite_control.x ---------------------------------
   r0.y = c11.x + c254.z;
   r0.z = c11.x + c254.w;
   r1 = vec4f(c11.x + c255.x, c11.x + c255.y, c11.x + c255.z, r1.w);
@@ -475,7 +481,6 @@ fn xbox_ps_composite_colorize(tex_r: f32, c11: vec4f) -> vec3f {
     r0.x = 0.0;
   }
 
-  // --- Value / saturation prep ----------------------------------------------
   r3.y = select(0.0, 1.0, c253.w >= r0.x);
   r0.y = c11.y + r0.x;
   r2.w = -r0.x * c11.y + r0.y;
@@ -525,7 +530,6 @@ fn xbox_ps_composite_colorize(tex_r: f32, c11: vec4f) -> vec3f {
   r5.x = r3.z;
   {
     let old_r6 = r6;
-    // r6.yzw = r0.w * old_r6.wzy
     r6.y = r0.w * old_r6.w;
     r6.z = r0.w * old_r6.z;
     r6.w = r0.w * old_r6.y;
@@ -548,7 +552,6 @@ fn xbox_ps_composite_colorize(tex_r: f32, c11: vec4f) -> vec3f {
 
   {
     let old_r2 = r2;
-    // r2 = old_r2.ywxz * c254.xxxx + r1.zzzz
     r2 = vec4f(
       old_r2.y * c254.x + r1.z,
       old_r2.w * c254.x + r1.z,

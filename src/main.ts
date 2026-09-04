@@ -7,7 +7,9 @@ const escHintEl = document.getElementById('esc-hint') as HTMLDivElement;
 const hudEl = document.getElementById('hud') as HTMLDivElement;
 const eggEl = document.getElementById('egg') as HTMLInputElement;
 const loopEl = document.getElementById('loop') as HTMLInputElement;
+const pauseEl = document.getElementById('pause') as HTMLInputElement;
 const freecamEl = document.getElementById('freecam') as HTMLInputElement;
+const hdEl = document.getElementById('hd') as HTMLInputElement;
 const loadEl = document.getElementById('loadSeconds') as HTMLInputElement;
 const restartEl = document.getElementById('restart') as HTMLButtonElement;
 
@@ -16,10 +18,10 @@ const renderer = new LoadingScreenRenderer();
 
 const keys = new Set<string>();
 
-/** Menu stays locked until the first ring join reveal finishes (or ?hud=1). */
+// Menu stays locked until the first ring join reveal finishes (or ?hud=1).
 let controlsUnlocked = false;
 let hudOpen = false;
-/** When false (`?hud=0`), unlock after the ring but do not auto-open the menu. */
+// When false (`?hud=0`), unlock after the ring but do not auto-open the menu.
 let openHudOnUnlock = true;
 
 function parseBool(value: string | null, fallback: boolean): boolean {
@@ -35,6 +37,7 @@ function readUrlParams(): void {
   eggEl.checked = parseBool(p.get('egg'), false);
   loopEl.checked = parseBool(p.get('loop'), false);
   freecamEl.checked = parseBool(p.get('freecam'), false);
+  hdEl.checked = parseBool(p.get('hd'), true);
   const load = Number(p.get('load'));
   loadEl.value = String(Number.isFinite(load) && load > 0 ? Math.floor(load) : 30);
   const hudParam = p.get('hud');
@@ -57,6 +60,7 @@ function writeUrlParams(): void {
   if (eggEl.checked) p.set('egg', '1');
   if (loopEl.checked) p.set('loop', '1');
   if (freecamEl.checked) p.set('freecam', '1');
+  if (!hdEl.checked) p.set('hd', '0');
   p.set('load', String(Math.max(1, Math.floor(Number(loadEl.value) || 30))));
   if (controlsUnlocked) {
     p.set('hud', hudOpen ? '1' : '0');
@@ -110,6 +114,7 @@ function applyHudToRenderer(): void {
   renderer.loop = loopEl.checked;
   const seconds = Number(loadEl.value);
   renderer.loadSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 30;
+  renderer.hd = hdEl.checked;
   renderer.setFreecam(freecamEl.checked);
   canvas.classList.toggle('freecam', freecamEl.checked);
   writeUrlParams();
@@ -138,6 +143,7 @@ async function main(): Promise<void> {
       document.exitPointerLock();
     }
   });
+  hdEl.addEventListener('change', applyHudToRenderer);
   loadEl.addEventListener('change', applyHudToRenderer);
   restartEl.addEventListener('click', () => {
     applyHudToRenderer();
@@ -183,12 +189,27 @@ async function main(): Promise<void> {
     { passive: false },
   );
 
+  // Offset so progress freezes while Pause is checked.
+  let pauseOffsetMs = 0;
+  let pausedAtMs = 0;
+  let wasPaused = false;
+
   let lastT = performance.now();
   const tick = (t: number) => {
     const dt = Math.min(0.1, (t - lastT) * 0.001);
     lastT = t;
+
+    const paused = pauseEl.checked;
+    if (paused && !wasPaused) {
+      pausedAtMs = t;
+    } else if (!paused && wasPaused) {
+      pauseOffsetMs += t - pausedAtMs;
+    }
+    wasPaused = paused;
+
+    const simNow = paused ? pausedAtMs - pauseOffsetMs : t - pauseOffsetMs;
     renderer.setKeys(keys);
-    renderer.frame(t, dt);
+    renderer.frame(simNow, dt);
     if (!controlsUnlocked && renderer.firstPlayComplete) {
       unlockControls();
     }
