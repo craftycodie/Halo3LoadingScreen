@@ -5,7 +5,7 @@
 
 # Halo 3 - Loading Screen 
 
-This is a WebGPU port of the loading screen for Halo 3 on the Xbox 360 created with a focus on parity with the original game.
+This is a WebGPU recreation of the loading screen for Halo 3 on the Xbox 360 created with a focus on parity with the original game.
 
 ## How
 
@@ -35,3 +35,8 @@ Example: `?egg=1&loop=1&load=45&hud=1`
 Feel free to use this project for whatever you want. Credit me if you feel like it, idc. 
 
 Have fun
+
+## Credits
+
+- Bungie for creating the original loading screen.
+- Xephorium - I stole the HD logo from [your remaster](https://github.com/Xephorium/Halo3LoadingScreen), SOZ!
