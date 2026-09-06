@@ -36,8 +36,6 @@ const OVERLAY_B_REF_SCALE = 2;
 const OVERLAY_B_CONTENT_WIDTH = 247;
 const OVERLAY_B_PAD_R = 5;
 const OVERLAY_B_PAD_B = 2;
-// Xbox HD framebuffer — point size / particle on-screen scale.
-const REF_FB_W = 1280;
 const REF_FB_H = 720;
 
 const GUIDE_HALF = [3.1415927, 2.5132742, 1.8849556, 1.2566371, 0.62831855];
@@ -679,10 +677,10 @@ export class LoadingScreenRenderer {
         ],
       });
 
-      // Lines use RT size (1px @ 720p). Points lock Xbox 1280×720 extents.
       const invRingX = 1 / ringW;
       const invRingY = 1 / ringH;
-      const invPtX = 1 / REF_FB_W;
+      const ptAspect = ringH > 0 ? ringW / ringH : 16 / 9;
+      const invPtX = 1 / (REF_FB_H * ptAspect);
       const invPtY = 1 / REF_FB_H;
 
       this.constants.setPassModes([1, 0, invRingX, invRingY]);

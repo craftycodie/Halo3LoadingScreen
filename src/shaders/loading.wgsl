@@ -322,7 +322,6 @@ fn vs_points(v: VsIn) -> VsOut {
     return empty_vs_out();
   }
 
-  // oPts is framebuffer pixels; pass_modes.zw locks Xbox 1280×720 extents.
   let corner = point_quad_corner(v.vid);
   let o_pts = clamp(pts_base / clip.z, 1.0, 64.0);
   intensity = intensity / max(0.25 * clip.z, 0.25);
