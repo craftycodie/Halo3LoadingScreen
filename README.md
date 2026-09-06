@@ -5,7 +5,7 @@
 
 # Halo 3 - Loading Screen 
 
-This is a WebGPU port of the loading screen for Halo 3 on the Xbox 360 created with a focus on parity with the original game.
+This is a WebGPU recreation of the loading screen for Halo 3 on the Xbox 360 created with a focus on parity with the original game.
 
 ## How
 
@@ -31,50 +31,12 @@ The HUD stays locked until the first ring finishes, after that, **Esc** toggles 
 
 Example: `?egg=1&loop=1&load=45&hud=1`
 
-## Export to Blender
-
-Builds an animated scene — ring reveal, outline growth, guide cage, particles,
-camera — plus a **GPU viewport** that runs the same Xbox shaders as the WebGPU
-path (`src/shaders/loading.wgsl` → `src/shaders/loading.glsl` via Blender's
-`GPUShaderCreateInfo`).
-
-EEVEE node graphs stay as a lightweight preview. Fidelity is the GLSL draw
-handler: float RT, additive ring / lines / points, then `ps_composite`.
-
-```bash
-npm run export:blender
-```
-
-Optional env: `LOAD_SECONDS=30`, `FPS=30`, `EGG=1`.
-
-Output:
-
-- `export/scene.json` — EEVEE meshes + frame keys + composite LUT
-- `export/gpu/` — lattice VBOs, atlas textures, sim stamps, `loading.glsl`
-- `export/halo3_loading_screen.blend` — if Blender is found
-
-Without Blender on PATH:
-
-```bash
-blender -b -P tools/blender_import_loading_screen.py -- export/scene.json export/halo3_loading_screen.blend
-```
-
-Open the `.blend`, look through **LoadingCamera**, and scrub the timeline.
-The GPU viewport uses that camera (or Blender freecam if you leave camera view).
-Sidebar **Halo 3 → GPU Viewport** toggles the shader path vs the EEVEE preview.
-
-**Render Animation / F12** uses the **Halo 3 Loading** engine (same GLSL as the viewport).
-Enable **Edit → Preferences → Save & Load → Auto Run Python Scripts**, or the
-engine is missing and Blender falls back to EEVEE. Use **Standard** view
-transform, not Filmic/AgX.
-
-Reload the GPU script after pulling changes:
-
-```bash
-blender export/halo3_loading_screen.blend --python tools/halo3_loading_gpu.py
-```
-
 ## Usage
 Feel free to use this project for whatever you want. Credit me if you feel like it, idc. 
 
 Have fun
+
+## Credits
+
+- Bungie for creating the original loading screen.
+- Xephorium - I stole the HD logo from [your remaster](https://github.com/Xephorium/Halo3LoadingScreen), SOZ!
